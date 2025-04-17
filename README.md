@@ -57,21 +57,25 @@ python main.py
 
 This will orchestrate the MCP session, tool discovery, agent setup, and interactive loop via the modules in `azure_ai_mcp_bridge/`:
 
-- `bridge.py`: handles MCP session management, tool preparation, and Azure AI Agent creation.
-- `chat.py`: manages the chat loop, polling runs, executing MCP tool wrappers, and displaying responses.
-- `mcp_integration.py`: contains the core logic for connecting to an MCP server, discovering tools, and generating async wrappers.
+- `bridge.py`: Manages environment loading, MCP session lifecycle, tool discovery, and Azure AI Agent creation.
+- `chat.py`: Handles the interactive chat loop, polling agent runs, executing MCP tool wrappers, and displaying responses.
+- `mcp_integration.py`: Contains the core logic for connecting to an MCP server, discovering MCP tools, and generating async wrappers.
+
+After the chat session ends, the created Azure AI Agent is automatically deleted.
 
 ## Project Structure
 
 ```
-main.py               # Minimal entrypoint delegating to bridge.run_bridge_chat()
-pyproject.toml        # Project metadata and dependencies
-README.md             # This documentation
-azure_ai_mcp_bridge/  # Core modules
-    bridge.py         # Orchestrates MCP & Azure AI Agent integration
-    chat.py           # Interactive chat and run polling/tool execution
-    mcp_integration.py# MCP client session and tool wrapper generation
-servers/              # Example MCP server implementation (weather_server.py)
+main.py                 # Minimal entrypoint delegating to bridge.run_bridge_chat()
+pyproject.toml          # Project metadata and dependencies
+README.md               # This documentation
+.env.sample             # Sample environment configuration file
+azure_ai_mcp_bridge/    # Core modules
+    bridge.py           # Orchestrates MCP & Azure AI Agent integration
+    chat.py             # Interactive chat, run polling, and tool execution
+    mcp_integration.py  # MCP client session and tool wrapper generation
+servers/                # Example MCP server implementation
+    weather_server.py   # MCP weather server example
 ```
 
 ## Testing in VS Code
