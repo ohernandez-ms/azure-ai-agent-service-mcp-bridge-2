@@ -1,111 +1,121 @@
 # Azure AI Agent - MCP Bridge
 
-This project demonstrates how to integrate tools exposed via the Model Context Protocol (MCP) into the Azure AI Agent Service using the Python SDK.
-
-It acts as a bridge, discovering tools from a running MCP server and dynamically wrapping them as functions callable by an Azure AI Agent.
+An experimental bridge for connecting MCP tools to Azure AI Agents. This project demonstrates how to discover and expose tools from an MCP server to Azure AI Agent Service using the Python SDK.
 
 ## Features
 
-- Connects to an MCP server (currently uses stdio transport for local testing).
-- Discovers available MCP tools (`list_tools`).
-- Dynamically generates Python `async` wrapper functions for each MCP tool.
-- Converts MCP tool input schemas to OpenAI-compatible function parameter schemas.
-- Prepares tool definitions suitable for the `azure-ai-projects` SDK.
-- Creates an Azure AI Agent configured with these tool definitions.
-- Registers these wrappers with an `azure.ai.assistant.agent.AssistantAgent` using `FunctionTool`.
-- **Handles tool execution** by polling the agent run status and manually calling the appropriate wrapper function when `requires_action`.
-- Submits tool results back to the agent run.
-- Includes a sample MCP weather server (`servers/weather_server.py`) for testing.
-- Provides a basic interactive console loop (`main.py`) to chat with the agent.
+- **Stdio MCP Server Support:** Connects to MCP servers using stdio transport only (HTTP/SSE is not implemented yet)
+- **Dynamic Tool Discovery:** Automatically finds all available tools from an MCP server
+- **Schema Conversion:** Translates MCP input schemas to Azure AI-compatible function parameters
+- **Azure AI Integration:** Registers discovered tools with Azure AI Agent Service
+- **Interactive Console:** Test your agent immediately with a simple chat interface
+- **Sample Weather Server:** Includes a ready-to-use MCP weather server for experimentation
+
+## How it Works
+
+```mermaid
+graph LR
+    User(User) <--> Chat(Chat Interface)
+    Chat <--> Agent(Azure AI Agent)
+    Agent <--> Bridge(MCP Bridge)
+    Bridge <--> Server(MCP Server)
+
+    style User fill:#f9f9f9
+    style Agent fill:#0072C6,color:white
+    style Bridge fill:#5cb85c,color:white
+    style Server fill:#d9534f,color:white
+```
+
+1. The bridge connects to an MCP server (e.g., the included weather server) via stdio
+2. It discovers available tools and generates wrapper functions for each
+3. These tools are registered with an Azure AI Agent
+4. When the agent needs to use a tool, the bridge:
+   - Receives the request from the agent
+   - Calls the appropriate MCP tool
+   - Returns the result back to the agent
+
+For a deeper technical explanation of the bridge implementation, check out the [Implementation Details](IMPLEMENTATION.md) document. It covers the architecture, components, and extension points for developers looking to modify or extend the bridge.
+
+## Example Usage
+
+Here's what it looks like when you run the bridge and ask for a weather forecast:
+
+![Example of bridge in action](assets/example.png)
+
+In this example:
+
+1. The bridge connects to the weather server and discovers two tools: `get_forecast` and `get_alerts`
+2. When asked about NYC weather, the agent decides to use the `get_forecast` tool
+3. The bridge executes the tool with the coordinates for NYC and returns the formatted weather data
+4. The agent provides a human-friendly summary of the weather forecast
 
 ## Setup
 
-1.  **Clone the repository:**
+1. **Clone the repository:**
 
-    ```bash
-    git clone <your-repo-url>
-    cd azure-ai-mcp-bridge
-    ```
+   ```bash
+   git clone <your-repo-url>
+   cd azure-ai-mcp-bridge
+   ```
 
-2.  **Create and activate a virtual environment:**
+2. **Set up your environment:**
 
-    ```bash
-    python -m venv .venv
-    # Windows
-    .\.venv\Scripts\activate
-    # MacOS/Linux
-    source .venv/bin/activate
-    ```
+   ```bash
+   python -m venv .venv
+   # Windows
+   .\.venv\Scripts\activate
+   # MacOS/Linux
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
 
-3.  **Install dependencies:**
+3. **Configure Azure AI:**
 
-    ```bash
-    pip install -r requirements.txt
-    ```
+   - Copy the sample environment file: `copy .env.sample .env` (Windows) or `cp .env.sample .env` (macOS/Linux)
+   - Add your **Azure AI Project Connection String** to the `.env` file
 
-4.  **Configure Azure AI Project:**
-    - Copy the sample environment file: `cp .env.sample .env` (or `copy .env.sample .env` on Windows).
-    - Edit the `.env` file and replace the placeholder value with your actual **Azure AI Project Connection String**. You can find this in the Azure AI Foundry portal under your project's overview page, or construct it using the format: `<HostName>;<AzureSubscriptionId>;<ResourceGroup>;<ProjectName>`. The `HostName` can be derived from the project's `discovery_url`.
+4. **Run the bridge:**
+   ```bash
+   python main.py
+   ```
 
-## Running the Agent
+## Deploying with Azure AI Agent Service
 
-Execute the main script (minimal entrypoint):
+This bridge works with Azure AI Agent Service, which provides the infrastructure for your AI agents. To deploy:
 
-```bash
-python main.py
-```
+1. **Set up Azure Resources:**
+   - Use Microsoft's [Azure AI Agent Service Quickstart](https://learn.microsoft.com/en-us/azure/ai-services/agents/quickstart) to create the required infrastructure
+   - You can use their convenient ["Deploy to Azure" button](https://learn.microsoft.com/en-us/azure/ai-services/agents/quickstart#choose-basic-or-standard-agent-setup) which automatically provisions all needed resources
+2. **Configure the Bridge:**
 
-This will orchestrate the MCP session, tool discovery, agent setup, and interactive loop via the modules in `azure_ai_mcp_bridge/`:
+   - Get your Project Connection String from the Azure AI Foundry portal
+   - Update the `.env` file with this connection string
+   - Configure your MCP server as needed (or use the included weather server)
 
-- `bridge.py`: Manages environment loading, MCP session lifecycle, tool discovery, and Azure AI Agent creation.
-- `chat.py`: Handles the interactive chat loop, polling agent runs, executing MCP tool wrappers, and displaying responses.
-- `mcp_integration.py`: Contains the core logic for connecting to an MCP server, discovering MCP tools, and generating async wrappers.
+3. **Deploy Your Agent:**
+   - Run the bridge locally to register your MCP tools with the Azure AI Agent
+   - Applications can then connect to your agent through the Azure AI Agent Service API
 
-After the chat session ends, the created Azure AI Agent is automatically deleted.
+## Limitations
+
+- **Experimental:** This is a proof-of-concept for developers to adapt and extend
+- **Stdio Transport Only:** Currently only supports stdio MCP servers, not HTTP-based ones
+- **Local Testing:** Designed for local development and testing, not production deployment
+- **Single Server:** Currently connects to one MCP server at a time
 
 ## Project Structure
 
 ```
-main.py                 # Minimal entrypoint delegating to bridge.run_bridge_chat()
-pyproject.toml          # Project metadata and dependencies
-README.md               # This documentation
-.env.sample             # Sample environment configuration file
+main.py                 # Minimal entrypoint that invokes bridge.run_bridge_chat()
+IMPLEMENTATION.md       # Detailed technical documentation on the bridge implementation
 azure_ai_mcp_bridge/    # Core modules
     bridge.py           # Orchestrates MCP & Azure AI Agent integration
-    chat.py             # Interactive chat, run polling, and tool execution
+    chat.py             # Interactive console and tool execution handling
     mcp_integration.py  # MCP client session and tool wrapper generation
 servers/                # Example MCP server implementation
-    weather_server.py   # MCP weather server example
+    weather_server.py   # MCP weather server with forecast and alerts tools
 ```
 
-## Testing in VS Code
+## License
 
-1.  Open the `azure-ai-mcp-bridge` folder in Visual Studio Code.
-2.  Ensure VS Code selects the Python interpreter from your `.venv` directory (use `Ctrl+Shift+P` -> `Python: Select Interpreter`).
-3.  Make sure you have created and configured your `.env` file as described in Setup step 4.
-4.  Open `main.py`.
-5.  Run or debug the file (F5 / Ctrl+F5). The script uses `DefaultAzureCredential` which often works seamlessly with VS Code's Azure login and `python-dotenv` for the connection string.
-
-## How it Works
-
-1.  `main.py` starts and loads configuration.
-2.  It uses the `managed_mcp_session` context manager from `mcp_integration.py` to start the MCP server script (`weather_server.py`) and establish a `ClientSession` over stdio.
-3.  `register_mcp_tools_as_azure_agent_functions` is called with the active `ClientSession`.
-4.  It calls `session.list_tools()` to get MCP tool definitions.
-5.  For each tool, it:
-    - Creates an `async def mcp_tool_wrapper(**kwargs)` function. This wrapper, when called by the agent, will use the `ClientSession` to execute the actual MCP tool (`session.call_tool`).
-    - Calls `convert_mcp_schema_to_openai_schema` to translate the MCP `inputSchema` into the format Azure AI Agent expects for function parameters.
-    - Creates an `azure.ai.assistant.functions.FunctionTool` object containing both the wrapper function and its schema definition.
-    - Adds the `FunctionTool` to the `agent.tools`.
-6.  `main.py` enters an interactive loop:
-    - User input is added as a message to a thread.
-    - `project_client.agents.create_run` starts the agent processing.
-    - The script **polls** `project_client.agents.get_run`.
-    - If `run.status == RunStatus.REQUIRES_ACTION`:
-      - It inspects `run.required_action` for tool calls.
-      - For each call, it finds the matching wrapper function in the `tool_function_map`.
-      - It `await`s the wrapper function (which calls the MCP server via the bridge).
-      - It calls `project_client.agents.submit_tool_outputs_to_run` with the results.
-    - If `run.status == RunStatus.COMPLETED`: The loop breaks.
-7.  Final messages are retrieved using `project_client.agents.list_messages` and displayed.
-8.  The `managed_mcp_session` context manager ensures the MCP server process is cleaned up.
+This project is licensed under the MIT License - see the LICENSE file for details.
