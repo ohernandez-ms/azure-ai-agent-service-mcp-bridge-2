@@ -1,0 +1,223 @@
+from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple
+
+# Assuming these stream types might be useful if not using stdio_client helper
+# from mcp.client.lowlevel import ClientToServerStream, ServerToClientStream
+# --- Azure AI Projects SDK Imports ---
+# Note: Actual model/type names might vary slightly based on SDK version
+
+# --- MCP Client Library Imports ---
+from mcp import ClientSession, StdioServerParameters
+from mcp import types as mcp_types
+from mcp.client.stdio import stdio_client
+
+
+# --- MCP Client Session Management (Keep as before) ---
+@asynccontextmanager
+async def managed_mcp_session(
+    server_script_path: str,
+) -> AsyncIterator[Optional[ClientSession]]:
+    """Manages the connection lifecycle to an MCP server."""
+    session: Optional[ClientSession] = None
+    exit_stack = AsyncExitStack()
+    try:
+        print(
+            f"[MCP Bridge] Attempting connection to server script: {server_script_path}"
+        )
+        is_python = server_script_path.endswith(".py")
+        command = "python" if is_python else "node"  # Adjust
+
+        server_params = StdioServerParameters(
+            command=command, args=[server_script_path]
+        )
+        read_stream, write_stream = await exit_stack.enter_async_context(
+            stdio_client(server_params)
+        )
+        session = await exit_stack.enter_async_context(
+            ClientSession(read_stream, write_stream)
+        )
+        await session.initialize()
+        print("[MCP Bridge] MCP Session Initialized.")
+        yield session
+    except Exception as e:
+        print(f"[MCP Bridge] ERROR: Failed to connect or initialize MCP session: {e}")
+        yield None
+    finally:
+        print("[MCP Bridge] Cleaning up MCP connection...")
+        await exit_stack.aclose()
+        print("[MCP Bridge] MCP connection closed.")
+
+
+# --- Schema Conversion (Keep as before, refine if needed) ---
+def convert_mcp_schema_to_openai_function_parameters(
+    mcp_schema,
+) -> Dict[str, Any]:
+    """Converts MCP inputSchema to OpenAI function parameter definition."""
+    if not mcp_schema or not hasattr(mcp_schema, "properties"):
+        # No schema available, default to empty parameters silently
+        return {"type": "object", "properties": {}}
+
+    properties = mcp_schema.properties if mcp_schema.properties else {}
+    required = mcp_schema.required if mcp_schema.required else []
+    converted_properties = {}
+
+    if isinstance(properties, dict):
+        for key, value in properties.items():
+            if isinstance(value, dict):
+                prop_details = {}
+                prop_details["type"] = value.get("type", "string")
+                if "description" in value:
+                    prop_details["description"] = value["description"]
+                # TODO: Add more schema conversions (enum, default, etc.) if needed
+                converted_properties[key] = prop_details
+            else:
+                print(
+                    f"[MCP Bridge] WARN: Skipping unexpected property format for '{key}': {value}"
+                )
+    else:
+        print(
+            f"[MCP Bridge] WARN: MCP schema properties format not dict-like: {properties}. Skipping."
+        )
+
+    openai_params = {"type": "object", "properties": converted_properties}
+    if required:
+        openai_params["required"] = required
+    # print(f"DEBUG: Converted OpenAI params schema: {openai_params}")
+    return openai_params
+
+
+# --- Tool Discovery and Wrapper Generation ---
+# Type alias for the wrapper function
+WrapperFunction = Callable[..., Awaitable[Any]]
+# Type alias for the map: Tool Name -> Wrapper Function
+ToolFunctionMap = Dict[str, WrapperFunction]
+
+
+async def discover_and_prepare_mcp_tools(
+    mcp_session: ClientSession,
+) -> Tuple[List[Dict[str, Any]], ToolFunctionMap]:
+    """
+    Discovers MCP tools, generates wrappers, and prepares definitions for Azure AI agent.
+
+    Returns:
+        A tuple containing:
+        1. List of tool definitions (dicts matching OpenAI function tool schema).
+        2. Dictionary mapping tool names to their async wrapper functions.
+    """
+    tool_definitions = []
+    tool_function_map: ToolFunctionMap = {}
+
+    if not mcp_session:
+        print("[MCP Bridge] No active MCP session. Cannot discover tools.")
+        return tool_definitions, tool_function_map
+
+    try:
+        print("[MCP Bridge] Listing MCP tools...")
+        list_tools_result = await mcp_session.list_tools()
+        mcp_tools: List[mcp_types.Tool] = (
+            list_tools_result.tools if list_tools_result else []
+        )
+        print(f"[MCP Bridge] Discovered {len(mcp_tools)} MCP tools.")
+    except Exception as e:
+        print(f"[MCP Bridge] ERROR: Failed to list MCP tools: {e}")
+        return tool_definitions, tool_function_map  # Return empty
+
+    for mcp_tool in mcp_tools:
+        tool_name = mcp_tool.name
+        tool_description = (
+            mcp_tool.description or f"Executes the MCP tool '{tool_name}'."
+        )
+        input_schema = getattr(mcp_tool, "inputSchema", None)
+
+        print(f"  - Processing MCP tool: '{tool_name}'")
+
+        # --- Create the async wrapper function ---
+        # Captures current tool info and session
+        def create_wrapper_func(
+            current_tool_name: str, session: ClientSession
+        ) -> WrapperFunction:
+            async def mcp_tool_wrapper(**kwargs: Any) -> Any:
+                """Dynamically generated wrapper for MCP tool."""
+                print(
+                    f"--->>> [Agent->MCP Bridge] Executing wrapper for MCP tool: '{current_tool_name}'"
+                )
+                print(f"        Arguments: {kwargs}")
+                try:
+                    # Use the captured session to call the actual MCP tool
+                    call_result = await session.call_tool(
+                        current_tool_name, arguments=kwargs
+                    )
+                    print(
+                        f"<--- [MCP Bridge<-MCP Server] MCP tool '{current_tool_name}' raw result received."
+                    )
+
+                    # Format the result for the agent (adapt as needed)
+                    result_content = "Tool executed, no text content returned."
+                    if call_result and call_result.content:
+                        if isinstance(call_result.content, list):
+                            texts = [
+                                item.text
+                                for item in call_result.content
+                                if isinstance(item, mcp_types.TextContent)
+                            ]
+                            result_content = (
+                                "\n".join(texts) if texts else str(call_result.content)
+                            )  # Fallback if no text
+                        elif isinstance(call_result.content, str):
+                            result_content = call_result.content
+                        else:
+                            result_content = str(call_result.content)
+
+                    print(
+                        f"        Formatted result (first 200 chars): {result_content[:200]}..."
+                    )
+                    # Return a simple string result, as expected by submit_tool_outputs
+                    return result_content
+
+                except Exception as e:
+                    print(
+                        f"[MCP Bridge] ERROR: Exception during MCP tool '{current_tool_name}' execution: {e}"
+                    )
+                    # Return an error string back to the agent
+                    return f"Error executing tool '{current_tool_name}': {str(e)}"
+
+            # Set a recognizable name for debugging, though agent uses the definition name
+            mcp_tool_wrapper.__name__ = f"mcp_wrapper_{current_tool_name}"
+            return mcp_tool_wrapper
+
+        # --- Generate the wrapper and store it ---
+        wrapper_function = create_wrapper_func(tool_name, mcp_session)
+        tool_function_map[tool_name] = wrapper_function
+
+        # --- Prepare the tool definition for the agent ---
+        try:
+            function_parameters = convert_mcp_schema_to_openai_function_parameters(
+                input_schema
+            )
+            # Structure expected by Azure AI SDK (based on OpenAI)
+            tool_definition = {
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "description": tool_description,
+                    "parameters": function_parameters,
+                },
+            }
+            # Perform basic validation
+            if isinstance(tool_definition["function"]["parameters"], dict):
+                tool_definitions.append(tool_definition)
+                print(f"    Prepared definition for tool '{tool_name}'.")
+            else:
+                print(
+                    f"    ERROR: Invalid parameter schema generated for '{tool_name}'. Skipping tool definition."
+                )
+
+        except Exception as e:
+            print(
+                f"    ERROR: Failed to create definition for tool '{tool_name}': {e}. Skipping."
+            )
+
+    print(
+        f"[MCP Bridge] Prepared {len(tool_definitions)} tool definitions and {len(tool_function_map)} wrapper functions."
+    )
+    return tool_definitions, tool_function_map
