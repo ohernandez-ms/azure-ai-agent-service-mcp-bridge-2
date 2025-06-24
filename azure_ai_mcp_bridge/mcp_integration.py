@@ -5,17 +5,46 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional
 from mcp import ClientSession, StdioServerParameters
 from mcp import types as mcp_types
 from mcp.client.stdio import stdio_client
-
+from mcp.client.streamable_http import streamablehttp_client
 
 @asynccontextmanager
-async def managed_mcp_session(
+async def managed_mcp_session_HTTP(
+    server_url: str,
+) -> AsyncIterator[Optional[ClientSession]]:
+    """Creates and manages an MCP client session connected to a server THROUGH STREAMABLE HTTP."""
+    session: Optional[ClientSession] = None
+    exit_stack = AsyncExitStack()
+    try:
+        print(f"[MCP Bridge] Connecting to streamable HTTP server: {server_url}")
+
+        _streams_context = streamablehttp_client(  # pylint: disable=W0201
+            url=server_url,
+            headers={},
+        )
+        read_stream, write_stream, _ = await _streams_context.__aenter__()  # pylint: disable=E1101
+
+        _session_context = ClientSession(read_stream, write_stream)  # pylint: disable=W0201
+        session = await _session_context.__aenter__()  # pylint: disable=C2801
+
+        await session.initialize()
+        print("[MCP Bridge] MCP Session Initialized.")
+        yield session
+    except Exception as e:
+        print(f"[MCP Bridge] ERROR: Failed to initialize MCP session: {e}")
+        yield None
+    finally:
+        print("[MCP Bridge] Closing MCP connection...")
+        await exit_stack.aclose()
+
+@asynccontextmanager
+async def managed_mcp_session_STDIO(
     server_script_path: str,
 ) -> AsyncIterator[Optional[ClientSession]]:
     """Creates and manages an MCP client session connected to a server."""
     session: Optional[ClientSession] = None
     exit_stack = AsyncExitStack()
     try:
-        print(f"[MCP Bridge] Connecting to server: {server_script_path}")
+        print(f"[MCP Bridge] Connecting to STDIO server: {server_script_path}")
         is_python = server_script_path.endswith(".py")
         command = "python" if is_python else "node"
 
@@ -37,7 +66,6 @@ async def managed_mcp_session(
     finally:
         print("[MCP Bridge] Closing MCP connection...")
         await exit_stack.aclose()
-
 
 def convert_mcp_schema_to_openai_function_parameters(
     mcp_schema,
